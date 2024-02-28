@@ -9,6 +9,7 @@ import mplcursors
 from matplotlib.dates import num2date
 import math
 import numpy as np
+import sys
 
 target_site = "https://www.myprotein.co.il"
 
@@ -140,13 +141,21 @@ def plot_graph():
     plt.show()
 
 def main():
-    print("hello")
     protein_powder_price = scrape_product_price(
         target_site
         + "/sports-nutrition/impact-whey-protein/10530943.html?switchcurrency=ILS&variation=12309347"
     )
     # protein_brownie_price
-    discount = fetch_discount()
+    fail_count = 0
+    for i in range(3):
+        try:
+            discount = fetch_discount()
+        except Exception as e:
+            fail_count += 1
+    if fail_count == 3:
+        messagebox.showinfo("Error", f"{e}")
+        sys.exit(1)
+        
     if discount is not None and protein_powder_price is not None:
         update_csv(discount, protein_powder_price)
         root = tk.Tk()
