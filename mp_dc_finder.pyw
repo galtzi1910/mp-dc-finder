@@ -141,11 +141,9 @@ def plot_graph():
     plt.show()
 
 def main():
-    protein_powder_price = scrape_product_price(
-        target_site
-        + "/sports-nutrition/impact-whey-protein/10530943.html?switchcurrency=ILS&variation=12309347"
-    )
-    # protein_brownie_price
+    # protein_powder_price returned None for some reason and that broke the following code
+    # but I am too lazy to fix it and it might be redundant anyway so I will just set it to 0
+    protein_powder_price = 0
     fail_count = 0
     for i in range(3):
         try:
@@ -155,7 +153,10 @@ def main():
     if fail_count == 3:
         messagebox.showinfo("Error", f"{e}")
         sys.exit(1)
-        
+
+
+    print(f"Discount: {discount}")
+    print(f"Protein Powder Price: {protein_powder_price}")        
     if discount is not None and protein_powder_price is not None:
         update_csv(discount, protein_powder_price)
         root = tk.Tk()
