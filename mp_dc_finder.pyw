@@ -10,24 +10,45 @@ from matplotlib.dates import num2date
 import math
 import numpy as np
 import sys
+import re
 
 target_site = "https://www.myprotein.co.il"
+WAFER_URL = "https://www.myprotein.co.il/p/sports-nutrition/crispy-protein-wafer/10961185/"
 
 def fetch_discount():
-    response = requests.get(target_site)
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        )
+    }
+
+    response = requests.get(target_site, headers=headers, timeout=20)
     response.raise_for_status()
     soup = BeautifulSoup(response.text, "html.parser")
 
-    discount = None
-    for string in soup.strings:
-        if "% off" in string:
-            discount_string = string.split("%")[0].split()[-1].strip()
+    candidates = []
+    for string in soup.stripped_strings:
+        text = string.strip()
+        lower = text.lower()
+
+        # Focus on actual discount copy and skip less-relevant promo text
+        if "off" not in lower:
+            continue
+        if "app" in lower or "first order" in lower or "new" in lower:
+            continue
+
+        for match in re.finditer(r"(\d{1,2})\s*%", text):
             try:
-                discount = int(discount_string)
-                break
+                candidates.append(int(match.group(1)))
             except ValueError:
-                continue
-    return discount
+                pass
+
+    if not candidates:
+        return None
+
+    return max(candidates)
 
 def scrape_product_price(url):
     # Send a GET request to the URL
@@ -38,17 +59,68 @@ def scrape_product_price(url):
     # Parse the HTML content
     soup = BeautifulSoup(response.text, "html.parser")
 
-    # Use a regex pattern to find the price
-    # The pattern assumes that the price is formatted like "123 ₪" within the text
-    for string in soup.strings:
-        if " ₪" in string:
-            splits = string.split(" ")
-            for curr_split in splits:
-                try:
-                    return float(curr_split)
-                except:
-                    pass
+    # DEBUG: Search for span elements with price-related classes
+    print("\n=== Searching for span elements with 'price' in class ===")
+    price_spans = soup.find_all("span", class_=lambda x: x and "price" in x.lower())
+    for i, span in enumerate(price_spans):
+        print(f"Span {i}: class='{span.get('class')}', text='{span.text.strip()}'")
+    
+    # Extract price from the first price span
+    if price_spans:
+        first_price_text = price_spans[0].text.strip()
+        print(f"\nFirst price text: '{first_price_text}'")
+        
+        # Extract just the numeric part (before any spaces/symbols)
+        price_str = first_price_text.split()[0]  # Gets "117.70" from "117.70 âªâ"
+        print(f"Extracted price string: '{price_str}'")
+        
+        try:
+            price = float(price_str)
+            print(f"SUCCESS: Extracted price {price}")
+            return price
+        except Exception as e:
+            print(f"Failed to convert '{price_str}' to float: {e}")
+    
+    print("Failed to find price")
     return None
+
+def fetch_usd_to_nis_rate():
+    """Fetch current USD to NIS exchange rate from a free API."""
+    try:
+        response = requests.get("https://open.er-api.com/v6/latest/USD")
+        response.raise_for_status()
+        data = response.json()
+        return data["rates"]["ILS"]
+    except Exception as e:
+        # Fallback to approximate rate if API fails
+        print(f"Failed to fetch exchange rate: {e}")
+        return 3.7  # Approximate fallback rate
+
+def calculate_max_units(base_price, discount_percent, usd_to_nis_rate, usd_limit=75):
+    """Calculate maximum units that can be bought under the USD limit.
+    
+    Args:
+        base_price: Base price in NIS
+        discount_percent: Discount percentage (e.g., 20 for 20%)
+        usd_to_nis_rate: Current USD to NIS exchange rate
+        usd_limit: Maximum USD budget (default 75)
+    
+    Returns:
+        tuple: (max_units, total_price_nis, total_price_usd)
+    """
+    # Apply the discount
+    discounted_price = base_price * (1 - discount_percent / 100)
+    # Apply additional 10% off
+    final_unit_price = discounted_price * 0.9
+    # Convert USD limit to NIS
+    nis_limit = usd_limit * usd_to_nis_rate
+    # Calculate max units
+    max_units = int(nis_limit / final_unit_price)
+    # Calculate actual total
+    total_price_nis = max_units * final_unit_price
+    total_price_usd = total_price_nis / usd_to_nis_rate
+    
+    return max_units, total_price_nis, total_price_usd
 
 def update_csv(discount, protein_powder_price):
     today = datetime.now().strftime("%Y-%m-%d")
@@ -144,6 +216,9 @@ def main():
     # protein_powder_price returned None for some reason and that broke the following code
     # but I am too lazy to fix it and it might be redundant anyway so I will just set it to 0
     protein_powder_price = 0
+    wafer_url = "https://www.myprotein.co.il/p/sports-nutrition/crispy-protein-wafer/10961185/"
+    
+    # Fetch discount
     fail_count = 0
     for i in range(3):
         try:
@@ -154,17 +229,53 @@ def main():
         messagebox.showinfo("Error", f"{e}")
         sys.exit(1)
 
-
     print(f"Discount: {discount}")
-    print(f"Protein Powder Price: {protein_powder_price}")        
+    print(f"Protein Powder Price: {protein_powder_price}")
+    
+    # Fetch exchange rate and wafer price
+    usd_to_nis = None
+    wafer_price = None
+    max_units = 0
+    total_nis = 0
+    total_usd = 0
+    
+    try:
+        usd_to_nis = fetch_usd_to_nis_rate()
+        print(f"Exchange Rate: 1 USD = {usd_to_nis:.2f} NIS")
+    except Exception as e:
+        print(f"Failed to fetch exchange rate: {e}")
+    
+    try:
+        wafer_price = scrape_product_price(wafer_url)
+        print(f"Wafer Price: {wafer_price} NIS")
+    except Exception as e:
+        print(f"Failed to fetch wafer price: {e}")
+    
+    # Calculate max units if we have all the data
+    if discount and wafer_price and usd_to_nis:
+        max_units, total_nis, total_usd = calculate_max_units(wafer_price, discount, usd_to_nis)
+        print(f"Max Units: {max_units}")
+        print(f"Total: {total_nis:.2f} NIS ({total_usd:.2f} USD)")
+        
     if discount is not None and protein_powder_price is not None:
         update_csv(discount, protein_powder_price)
         root = tk.Tk()
         root.withdraw()
-        if messagebox.askyesno(
-            "My Protein Discount Alert",
-            f"My Protein has a {discount}% discount today.\nWould you like to see the discount trend graph?",
-        ):
+        
+        # Build message with discount and wafer info
+        message = f"My Protein has a {discount}% discount today."
+        
+        if max_units > 0:
+            # message += f"\n\nYou can buy {max_units} units of Crispy Protein Wafer for under 75 USD."
+            # message += f"\nTotal: {total_nis:.2f} ₪ (≈{total_usd:.2f} USD)"
+            # message += f"\nPrice per unit after discounts: {total_nis/max_units:.2f} ₪"
+            # message += f"\n\nTo stay under 75 USD, thats {max_units} wafers for {total_nis:.2f}₪ (≈{total_usd:.2f} USD) • {total_nis/max_units:.2f}₪ each"
+            message += f" Thats {max_units} Protein Wafers."
+            message += f"\n\n75 USD is {usd_to_nis*75:.2f}₪, {max_units} wafers is {total_nis:.2f}₪ ({total_nis/max_units:.2f}₪ each)"
+        
+        message += "\n\nWould you like to see the discount trend graph?"
+        
+        if messagebox.askyesno("My Protein Discount Alert", message):
             plot_graph()
         root.destroy()
     else:
